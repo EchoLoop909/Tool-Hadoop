@@ -18,7 +18,8 @@ public class Tool {
     private static final String HDFS_USER = "hdfs";
     private static final String HDFS_DIR = "/anhvty";
 
-    private static final Path BASE_PATH = Paths.get(System.getProperty("user.dir"), BASE_DIR);
+    // ✅ Thay vì user.dir (thư mục cài đặt), dùng user.home (thư mục người dùng)
+    private static final Path BASE_PATH = Paths.get(System.getProperty("user.home"), BASE_DIR);
     private static final Path PENDING_DIR = BASE_PATH.resolve("pending");
     private static final Path SUCCESS_DIR = BASE_PATH.resolve("success");
     private static final Path ERROR_DIR = BASE_PATH.resolve("error");
@@ -95,7 +96,6 @@ public class Tool {
     private static void sendToHadoopApi(String fileName, byte[] xmlBytes) throws IOException {
         String sanitizedFileName = fileName.replaceAll("[\\[\\]{}()<>*?|\"^%$#@!~`]", "_");
         String hdfsPath = HDFS_DIR + "/" + sanitizedFileName;
-
 
         String initURL = String.format(
                 "http://%s:%d/webhdfs/v1%s?op=CREATE&overwrite=true&user.name=%s",
