@@ -4,6 +4,7 @@ import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.*;
+import java.util.Properties;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -11,24 +12,53 @@ import java.util.logging.*;
 
 public class Tool {
     private static final Logger LOGGER = Logger.getLogger(Tool.class.getName());
+    private static final String CONFIG_FILE = "config.properties";
 
-    private static final String BASE_DIR = "DEMO";
-    private static final String NAMENODE_HOST = "10.2.22.63";
-    private static final int NAMENODE_PORT = 9870;
-    private static final String HDFS_USER = "hdfs";
-    private static final String HDFS_DIR = "/anhvty";
+    private static String BASE_DIR;
+    private static String DOMAIN;
+    private static String HDFS_USER;
+    private static String HDFS_DIR;
+    private static String INTERNAL_KEY;
 
-    // ✅ Thay vì user.dir (thư mục cài đặt), dùng user.home (thư mục người dùng)
-    private static final Path BASE_PATH = Paths.get(System.getProperty("user.home"), BASE_DIR);
-    private static final Path PENDING_DIR = BASE_PATH.resolve("pending");
-    private static final Path SUCCESS_DIR = BASE_PATH.resolve("success");
-    private static final Path ERROR_DIR = BASE_PATH.resolve("error");
-    private static final Path LOG_DIR = BASE_PATH.resolve("log");
+    private static Path BASE_PATH;
+    private static Path PENDING_DIR;
+    private static Path SUCCESS_DIR;
+    private static Path ERROR_DIR;
+    private static Path LOG_DIR;
 
     public static void main(String[] args) {
+        loadConfig();
         initializeDirectories();
         setupLogging();
         startFileProcessing();
+    }
+
+    private static void loadConfig() {
+        Properties config = new Properties();
+        Path configPath = Paths.get(System.getProperty("user.dir"), CONFIG_FILE);
+        try (InputStream in = Files.newInputStream(configPath)) {
+            config.load(in);
+        } catch (IOException e) {
+            System.err.println("Không thể đọc file cấu hình từ " + configPath.toAbsolutePath() + ": " + e.getMessage());
+            System.exit(1);
+        }
+
+        BASE_DIR = config.getProperty("base.dir", "demo");
+        DOMAIN = config.getProperty("base.domain");
+        HDFS_USER = config.getProperty("hdfs.user");
+        HDFS_DIR = config.getProperty("hdfs.dir");
+        INTERNAL_KEY = config.getProperty("internal.key");
+
+        if (DOMAIN == null || HDFS_DIR == null) {
+            System.err.println("Required configuration missing: base.domain and hdfs.dir");
+            System.exit(1);
+        }
+
+        BASE_PATH = Paths.get(System.getProperty("user.home"), BASE_DIR);
+        PENDING_DIR = BASE_PATH.resolve("pending");
+        SUCCESS_DIR = BASE_PATH.resolve("success");
+        ERROR_DIR = BASE_PATH.resolve("error");
+        LOG_DIR = BASE_PATH.resolve("log");
     }
 
     private static void initializeDirectories() {
@@ -40,6 +70,7 @@ public class Tool {
             System.out.println("Đã tạo thư mục DEMO nếu chưa tồn tại tại: " + BASE_PATH.toAbsolutePath());
         } catch (IOException e) {
             System.err.println("Không thể tạo thư mục DEMO: " + e.getMessage());
+            System.exit(1);
         }
     }
 
@@ -53,6 +84,7 @@ public class Tool {
             LOGGER.info("Tool đã khởi động và sẵn sàng làm việc.");
         } catch (IOException e) {
             System.err.println("Không thể thiết lập logging: " + e.getMessage());
+            System.exit(1);
         }
     }
 
@@ -97,35 +129,45 @@ public class Tool {
         String sanitizedFileName = fileName.replaceAll("[\\[\\]{}()<>*?|\"^%$#@!~`]", "_");
         String hdfsPath = HDFS_DIR + "/" + sanitizedFileName;
 
-        String initURL = String.format(
-                "http://%s:%d/webhdfs/v1%s?op=CREATE&overwrite=true&user.name=%s",
-                NAMENODE_HOST, NAMENODE_PORT, hdfsPath, HDFS_USER
-        );
-
+        String initURL = String.format("%s%s?op=CREATE&overwrite=false", DOMAIN, hdfsPath);
         HttpURLConnection initConn = (HttpURLConnection) new URL(initURL).openConnection();
         initConn.setRequestMethod("PUT");
-        initConn.setInstanceFollowRedirects(false);
+        initConn.setInstanceFollowRedirects(false);  // quan trọng: tắt tự redirect
+        if (INTERNAL_KEY != null) {
+            initConn.setRequestProperty("Authorization", INTERNAL_KEY);
+        }
 
         int initResponse = initConn.getResponseCode();
+
+        // Kiểm tra mã trả về phải là 307 (Temporary Redirect)
         if (initResponse != 307) {
             throw new IOException("Không lấy được URL upload. Mã lỗi: " + initResponse);
         }
 
         String uploadUrl = initConn.getHeaderField("Location");
+        if (uploadUrl == null || uploadUrl.isEmpty()) {
+            throw new IOException("Không có URL upload trả về trong header Location.");
+        }
 
+        // Mở kết nối mới tới URL upload thực sự
         HttpURLConnection uploadConn = (HttpURLConnection) new URL(uploadUrl).openConnection();
         uploadConn.setRequestMethod("PUT");
         uploadConn.setDoOutput(true);
+        if (HDFS_USER != null) {
+            uploadConn.setRequestProperty("Hdfs-User", HDFS_USER);
+        }
 
+        // Ghi dữ liệu file XML vào body request
         try (OutputStream os = uploadConn.getOutputStream()) {
             os.write(xmlBytes);
         }
 
         int uploadResponse = uploadConn.getResponseCode();
-        if (uploadResponse != 201) {
+        if (uploadResponse != HttpURLConnection.HTTP_CREATED) {  // 201 là thành công upload
             throw new IOException("Upload thất bại. Mã lỗi: " + uploadResponse);
         }
 
         LOGGER.info("Đã gửi file tới HDFS thành công tại: " + hdfsPath);
     }
+
 }
